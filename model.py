@@ -39,6 +39,7 @@ class DCGAN(object):
 
     self.batch_size = batch_size
     self.sample_num = sample_num
+    self.example_num = self.batch_size
 
     self.input_height = input_height
     self.input_width = input_width
@@ -68,16 +69,7 @@ class DCGAN(object):
     self.dataset_name = dataset_name
     self.input_fname_pattern = input_fname_pattern
     self.checkpoint_dir = checkpoint_dir
-
-
-    #TODO: Dataloading for different classes
-    self.data = []
-    paths = glob(os.path.join("./data", self.dataset_name, "*/"))
-    print paths
-    for path in paths:
-      data = glob(os.path.join(path, self.input_fname_pattern))
-      self.data.append(data)
-      
+   
     self.shapesdataset = (dataset_name=="shapes")
     if self.shapesdataset:
       from ShapesDataset import shapeGenerator
@@ -90,24 +82,39 @@ class DCGAN(object):
         'num_extra_points': 0
       }
       self.shapes = shapeGenerator(params)
-    
-    imreadImg = imread(self.data[0][0])
-    if len(imreadImg.shape) >= 3: #check if image is a non-grayscale image by checking channel number
-      self.c_dim = imreadImg.shape[-1]
+      
+    #TODO: Dataloading for different classes
     else:
-      self.c_dim = 1
-
-    self.grayscale = (self.c_dim == 1)
+      self.data = []
+      self.names = []
+      paths = glob(os.path.join("./data", self.dataset_name, "*/"))
+      print paths
+      for path in paths:
+        _, name = os.path.split(os.path.split(path)[0])
+        print name
+        self.names.append(name)
+        data = glob(os.path.join(path, self.input_fname_pattern))
+        self.data.append(data)
+        
+      print len(self.data)
+      
+      imreadImg = imread(self.data[0][0])
+      if len(imreadImg.shape) >= 3:
+        #check if image is a non-grayscale image by checking channel number
+        self.c_dim = imreadImg.shape[-1]
+      else:
+        self.c_dim = 1
+      self.grayscale = (self.c_dim == 1)
 
     self.build_model()
     
 
   def build_model(self):
 
-    if self.crop:
-      image_dims = [self.output_height, self.output_width, self.c_dim]
-    else:
-      image_dims = [self.input_height, self.input_width, self.c_dim]
+    #if self.crop:
+    image_dims = [self.output_height, self.output_width, self.c_dim]
+    #else:
+    #  image_dims = [self.input_height, self.input_width, self.c_dim]
       
     if self.shapesdataset:
       image_dims = [2]
@@ -116,7 +123,7 @@ class DCGAN(object):
       tf.float32, [self.batch_size] + image_dims, name='real_images')
       
     self.class_examples = tf.placeholder(
-      tf.float32, [self.batch_size] + image_dims, name='class_examples')
+      tf.float32, [self.example_num] + image_dims, name='class_examples')
 
     inputs = self.inputs
 
@@ -226,31 +233,22 @@ class DCGAN(object):
     sample_z = np.random.uniform(-1, 1, size=(self.sample_num, self.z_dim))
     
     if not self.shapesdataset:
-      sample_files = self.data[0][0:self.sample_num]
-      sample = [
-          get_image(sample_file,
-                    input_height=self.input_height,
-                    input_width=self.input_width,
-                    resize_height=self.output_height,
-                    resize_width=self.output_width,
-                    crop=self.crop,
-                    grayscale=self.grayscale) for sample_file in sample_files]
-      sample_inputs = np.array(sample).astype(np.float32)
-      save_images(sample_inputs, image_manifold_size(sample_inputs.shape[0]),
-                    './{}/class_examples.png'.format(config.sample_dir))
-        
-      sample_files = self.data[1][0:self.sample_num]
-      sample = [
-          get_image(sample_file,
-                    input_height=self.input_height,
-                    input_width=self.input_width,
-                    resize_height=self.output_height,
-                    resize_width=self.output_width,
-                    crop=self.crop,
-                    grayscale=self.grayscale) for sample_file in sample_files]
-      sample_inputs_ = np.array(sample).astype(np.float32)
-      save_images(sample_inputs_, image_manifold_size(sample_inputs_.shape[0]),
-                    './{}/class_examples_.png'.format(config.sample_dir))
+      sample_inputs = []
+      num_sample_classes = min(5, len(self.data))
+      for i in range(num_sample_classes):
+        sample_files = self.data[i][0:self.example_num]
+        sample = [
+            get_image(sample_file,
+                      input_height=self.input_height,
+                      input_width=self.input_width,
+                      resize_height=self.output_height,
+                      resize_width=self.output_width,
+                      crop=self.crop,
+                      grayscale=self.grayscale) for sample_file in sample_files]
+        sample_images = np.array(sample).astype(np.float32)
+        save_images(sample_images, image_manifold_size(sample_images.shape[0]),
+            './{}/class_examples_{}.png'.format(config.sample_dir, self.names[i]))
+        sample_inputs.append(sample_images)
 
     if self.shapesdataset:
       sample_inputs = self.shapes._get_shape(0)[0][:self.batch_size]
@@ -274,11 +272,20 @@ class DCGAN(object):
       batch_idxs = min(min([len(data) for data in self.data]), config.train_size) // config.batch_size
 
       for idx in xrange(0, 1000):#batch_idxs):
-        data, fake_data = np.random.choice(self.data, [2])
+        k = np.random.choice(len(self.data))
+        data = self.data[k]
         #TODO: Select data in an appropriate way
         
         if not self.shapesdataset:
-          batch_files = np.random.choice(data, [config.batch_size])#data[idx*config.batch_size:(idx+1)*config.batch_size]
+          if np.random.random() > 0.5:
+            inds = np.random.randint(0, len(self.data), [config.batch_size])
+            batch_files = []
+            for i in inds:
+              data = self.data[i]
+              batch_files = np.concatenate([batch_files, np.random.choice(data, [1])])
+          else:
+            batch_files = np.random.choice(data, [config.batch_size])
+          #data[idx*config.batch_size:(idx+1)*config.batch_size]
           batch = [
               get_image(batch_file,
                         input_height=self.input_height,
@@ -291,23 +298,26 @@ class DCGAN(object):
             batch_images = np.array(batch).astype(np.float32)[:, :, :, None]
           else:
             batch_images = np.array(batch).astype(np.float32)
-            
-          #exemplars
-          batch_files = np.random.choice(data, [config.batch_size])
-          batch = [
-              get_image(batch_file,
-                        input_height=self.input_height,
-                        input_width=self.input_width,
-                        resize_height=self.output_height,
-                        resize_width=self.output_width,
-                        crop=self.crop,
-                        grayscale=self.grayscale) for batch_file in batch_files]
-          class_examples = np.array(batch).astype(np.float32)
           
-        if self.shapesdataset:
+          #exemplars
+          use_separate_examples = False
+          if use_separate_examples:
+            batch_files = np.random.choice(data, [self.example_num])
+            batch = [
+                get_image(batch_file,
+                          input_height=self.input_height,
+                          input_width=self.input_width,
+                          resize_height=self.output_height,
+                          resize_width=self.output_width,
+                          crop=self.crop,
+                          grayscale=self.grayscale) for batch_file in batch_files]
+            class_examples = np.array(batch).astype(np.float32)
+          else:
+            class_examples = batch_images[:self.example_num]
+          
+        else:
           batch_images = self.shapes._get_shape(idx)[0][:self.batch_size]
           class_examples = self.shapes._get_shape(idx)[0][self.batch_size:]
-        #print len(batch_images)
 
         batch_z = np.random.uniform(-1, 1, [config.batch_size, self.z_dim]) \
               .astype(np.float32)
@@ -353,31 +363,22 @@ class DCGAN(object):
           if np.mod(counter, 100) == 1:
             #TODO: Fix sampling for CGAN
             #try:
-            if True:
+            for i in range(num_sample_classes):
               samples, d_loss, g_loss = self.sess.run(
                 [self.sampler, self.d_loss, self.g_loss],
                 feed_dict={
                     self.z: sample_z,
-                    self.class_examples: sample_inputs,
-                    self.inputs: sample_inputs,
+                    self.class_examples: sample_inputs[i],
+                    self.inputs: sample_inputs[i],
                     #TODO: add samples
                 },
               )
               save_images(samples, image_manifold_size(samples.shape[0]),
-                    './{}/train_{:02d}_{:04d}.png'.format(config.sample_dir, epoch, idx))
-              print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss)) 
-              
-              samples_ = self.sess.run(
-                self.sampler,
-                feed_dict={
-                    self.z: sample_z,
-                    self.class_examples: sample_inputs_,
-                    self.inputs: sample_inputs_,
-                    #TODO: add samples
-                },
-              )
-              save_images(samples_, image_manifold_size(samples_.shape[0]),
-                    './{}/train_{:02d}_{:04d}_.png'.format(config.sample_dir, epoch, idx))
+                    './{}/train_{:02d}_{:04d}_{}.png'.format(\
+                    config.sample_dir, epoch, idx, self.names[i]))
+                    
+            print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss)) 
+
             #except:
             #  print("one pic error!...")
             
@@ -525,8 +526,6 @@ class DCGAN(object):
         return self.points_generator(z, y)
       return self.new_generator(z, y)
       
-      
-    
   def sampler(self, z, y=None):
     with tf.variable_scope("generator") as scope:
       scope.reuse_variables()
@@ -580,6 +579,7 @@ class DCGAN(object):
           k_h=5, k_w=5, d_h=1, d_w=1, name='g_c4')
       
       return tf.nn.tanh(h4)
+      
       
   def points_generator(self, z, y=None):
       z_ = linear(z, 256, 'g_h0z_lin')
