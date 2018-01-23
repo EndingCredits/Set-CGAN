@@ -1,18 +1,15 @@
-# DCGAN in Tensorflow
+# Set-condiioned DC-GAN
 
-Tensorflow implementation of [Deep Convolutional Generative Adversarial Networks](http://arxiv.org/abs/1511.06434) which is a stabilize Generative Adversarial Networks. The referenced torch code can be found [here](https://github.com/soumith/dcgan.torch).
+This is an adaptation of the standard class-conditioned DC-GAN so now generator (and discriminator) are conditioned on an additional example set (as opposed to an explicit class label) whose distribution it must match.
 
-![alt tag](DCGAN.png)
-
-* [Brandon Amos](http://bamos.github.io/) wrote an excellent [blog post](http://bamos.github.io/2016/08/09/deep-completion/) and [image completion code](https://github.com/bamos/dcgan-completion.tensorflow) based on this repo.
-* *To avoid the fast convergence of D (discriminator) network, G (generator) network is updated twice for each D network update, which differs from original paper.*
+For a similar idea, but in an autoencoder set-up, see [this paper](https://arxiv.org/abs/1606.02185).
 
 
-## Online Demo
+## Acknowledgements
 
-[<img src="https://raw.githubusercontent.com/carpedm20/blog/master/content/images/face.png">](http://carpedm20.github.io/faces/)
+This repository is based off the popular [DCGAN-tensorflow](https://github.com/carpedm20/DCGAN-tensorflow). Many thanks to Taehoon Kim / [@carpedm20](http://carpedm20.github.io/).
 
-[link](http://carpedm20.github.io/faces/)
+It also uses a GAN regulariser given [here](https://github.com/rothk/Stabilizing_GANs). Many thanks to the authors.
 
 
 ## Prerequisites
@@ -21,92 +18,73 @@ Tensorflow implementation of [Deep Convolutional Generative Adversarial Networks
 - [Tensorflow 0.12.1](https://github.com/tensorflow/tensorflow/tree/r0.12)
 - [SciPy](http://www.scipy.org/install.html)
 - [pillow](https://github.com/python-pillow/Pillow)
-- (Optional) [moviepy](https://github.com/Zulko/moviepy) (for visualization)
 - (Optional) [Align&Cropped Images.zip](http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html) : Large-scale CelebFaces Dataset
+- (Optional) [matplotlib](https://matplotlib.org/) : Plotting tool for visualisation of synthetic shapes dataset
 
 
 ## Usage
 
-First, download dataset with:
+Test on synthetic dataset:
 
-    $ python download.py mnist celebA
+    $ python main.py --dataset shapes --train
+    
+Or download dataset with:
 
-To train a model with downloaded dataset:
+    $ python download.py celebA
 
-    $ python main.py --dataset mnist --input_height=28 --output_height=28 --train
-    $ python main.py --dataset celebA --input_height=108 --train --crop
+Train a model with downloaded dataset:
 
-To test with an existing model:
+    $ python main.py --dataset celebA --use_tags --input_height=108 --train
 
-    $ python main.py --dataset mnist --input_height=28 --output_height=28
-    $ python main.py --dataset celebA --input_height=108 --crop
 
-Or, you can use your own dataset (without central crop) by:
+You can use your own dataset (without central crop) by:
 
     $ mkdir data/DATASET_NAME
-    ... add images to data/DATASET_NAME ...
+    $ mkdir data/DATASET_NAME/CLASS_1
+    ... add images to data/DATASET_NAME/CLASS_1 ...
+    ... add images to data/DATASET_NAME/CLASS_2 ...
+                       ...
+    ... add images to data/DATASET_NAME/CLASS_N ...
     $ python main.py --dataset DATASET_NAME --train
     $ python main.py --dataset DATASET_NAME
     $ # example
     $ python main.py --dataset=eyes --input_fname_pattern="*_cropped.png" --train
+    
+Alternatively, for each image you can create a .tags file of the same name with a list of tags separated by spaces.
+    $ # example
+    $ python main.py --dataset=eyes --use_tags
+
 
 ## Results
 
-![result](assets/training.gif)
-
 ### celebA
 
-After 6th epoch:
+5_o_clock_shadow:
+![examples](assets/5_o_Clock_Shadow_examples.png)
+![samples](assets/5_o_Clock_Shadow_samples.png)
 
-![result3](assets/result_16_01_04_.png)
+bald:
+![examples](assets/Bald_examples.png)
+![samples](assets/Bald_samples.png)
 
-After 10th epoch:
+bald:
+![examples](assets/Wearing_Lipstick_examples.png)
+![samples](assets/Wearing_Lipstick_samples.png)
 
-![result4](assets/test_2016-01-27%2015:08:54.png)
+### Anime faces
+Dataset based on extracted faces from danbooru images tagged with 500 most popular characters, roughly 400 images per character
 
-### Asian face dataset
+artoria_pendragon_(all):
+![examples](assets/artoria_pendragon_(all)_examples.png)
+![samples](assets/artoria_pendragon_(all)_samples.png)
 
-![custom_result1](web/img/change5.png)
+louise_francoise_le_blanc_de_la_valliere:
+![examples](assets/louise_francoise_le_blanc_de_la_valliere_examples.png)
+![samples](assets/louise_francoise_le_blanc_de_la_valliere_samples.png)
 
-![custom_result1](web/img/change2.png)
-
-![custom_result2](web/img/change4.png)
-
-### MNIST
-
-MNIST codes are written by [@PhoenixDai](https://github.com/PhoenixDai).
-
-![mnist_result1](assets/mnist1.png)
-
-![mnist_result2](assets/mnist2.png)
-
-![mnist_result3](assets/mnist3.png)
-
-More results can be found [here](./assets/) and [here](./web/img/).
-
-
-## Training details
-
-Details of the loss of Discriminator and Generator (with custom dataset not celebA).
-
-![d_loss](assets/d_loss.png)
-
-![g_loss](assets/g_loss.png)
-
-Details of the histogram of true and fake result of discriminator (with custom dataset not celebA).
-
-![d_hist](assets/d_hist.png)
-
-![d__hist](assets/d__hist.png)
+urakaze_(kantai_collection):
+![examples](assets/urakaze_(kantai_collection)_examples.png)
+![samples](assets/urakaze_(kantai_collection)_samples.png)
 
 
-## Related works
 
-- [BEGAN-tensorflow](https://github.com/carpedm20/BEGAN-tensorflow)
-- [DiscoGAN-pytorch](https://github.com/carpedm20/DiscoGAN-pytorch)
-- [simulated-unsupervised-tensorflow](https://github.com/carpedm20/simulated-unsupervised-tensorflow)
-
-
-## Author
-
-Taehoon Kim / [@carpedm20](http://carpedm20.github.io/)

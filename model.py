@@ -10,6 +10,7 @@ from six.moves import xrange
 from ops import *
 from utils import *
 
+#import matplotlib for plotting
 import matplotlib.pyplot as plt
 
 def conv_out_size_same(size, stride):
@@ -20,7 +21,8 @@ class DCGAN(object):
          batch_size=64, sample_num = 64, output_height=64, output_width=64,
          y_dim=128, z_dim=100, gf_dim=64, df_dim=64,
          gfc_dim=1024, dfc_dim=1024, c_dim=3, dataset_name='default',
-         input_fname_pattern='*.jpg', checkpoint_dir=None, sample_dir=None):
+         input_fname_pattern='*.jpg', checkpoint_dir=None, sample_dir=None,
+         use_tags=False, compare_examples=True):
     """
 
     Args:
@@ -36,10 +38,16 @@ class DCGAN(object):
     """
     self.sess = sess
     self.crop = crop
+    
+    self.use_tags = use_tags
+    self.compare_examples = compare_examples
+    
+    self.use_regularization = True
+    self.use_stacked_discrim = False
 
     self.batch_size = batch_size
     self.sample_num = sample_num
-    self.example_num = self.batch_size
+    self.example_num = self.batch_size//4
 
     self.input_height = input_height
     self.input_width = input_width
@@ -54,6 +62,8 @@ class DCGAN(object):
 
     self.gfc_dim = gfc_dim
     self.dfc_dim = dfc_dim
+    
+    
 
     # batch normalization : deals with poor initialization helps gradient flow
     self.d_bn1 = batch_norm(name='d_bn1')
@@ -69,9 +79,10 @@ class DCGAN(object):
     self.dataset_name = dataset_name
     self.input_fname_pattern = input_fname_pattern
     self.checkpoint_dir = checkpoint_dir
-   
     self.shapesdataset = (dataset_name=="shapes")
     if self.shapesdataset:
+      print("Using shapes dataset")
+
       from ShapesDataset import shapeGenerator
       params = {
         'point_noise_scale': 0.01,
@@ -82,28 +93,43 @@ class DCGAN(object):
         'num_extra_points': 0
       }
       self.shapes = shapeGenerator(params)
+      self.use_regularization = False
       
-    #TODO: Dataloading for different classes
     else:
       self.data = []
       self.names = []
       paths = glob(os.path.join("./data", self.dataset_name, "*/"))
-      print paths
-      for path in paths:
-        _, name = os.path.split(os.path.split(path)[0])
-        print name
-        self.names.append(name)
-        data = glob(os.path.join(path, self.input_fname_pattern))
-        self.data.append(data)
-        
-      print len(self.data)
+      if not self.use_tags:
+        # Group by folders
+        for path in paths:
+          data = glob(os.path.join(path, self.input_fname_pattern))
+          if len(data) > self.batch_size:
+            self.data.append(data)
+            _, name = os.path.split(os.path.split(path)[0])
+            #print name
+            self.names.append(name)
+      else:
+        # Load and read .tags files
+        from collections import defaultdict
+        all_data = defaultdict(lambda: [])
+        print("Building dataset...")
+        for path in paths:
+          data = glob(os.path.join(path, self.input_fname_pattern))
+          for d in data:
+            with open(d + '.tags', "r") as f:
+              this_tags = f.readline().split()
+            for t in this_tags:
+              all_data[t].append(d)
+        self.data = all_data.values()
+        self.names = all_data.keys()
+
+      print(len(self.data))
       
       imreadImg = imread(self.data[0][0])
+      self.c_dim = 1
       if len(imreadImg.shape) >= 3:
         #check if image is a non-grayscale image by checking channel number
         self.c_dim = imreadImg.shape[-1]
-      else:
-        self.c_dim = 1
       self.grayscale = (self.c_dim == 1)
 
     self.build_model()
@@ -111,12 +137,10 @@ class DCGAN(object):
 
   def build_model(self):
 
-    #if self.crop:
-    image_dims = [self.output_height, self.output_width, self.c_dim]
-    #else:
-    #  image_dims = [self.input_height, self.input_width, self.c_dim]
-      
-    if self.shapesdataset:
+
+    if not self.shapesdataset:
+      image_dims = [self.output_height, self.output_width, self.c_dim]
+    else:
       image_dims = [2]
 
     self.inputs = tf.placeholder(
@@ -124,11 +148,14 @@ class DCGAN(object):
       
     self.class_examples = tf.placeholder(
       tf.float32, [self.example_num] + image_dims, name='class_examples')
+      
+    self.fake_examples = tf.placeholder(
+      tf.float32, [self.example_num] + image_dims, name='class_examples')
 
     inputs = self.inputs
 
     self.z = tf.placeholder(
-      tf.float32, [None, self.z_dim], name='z')
+      tf.float32, [self.batch_size, self.z_dim], name='z')
     self.z_sum = histogram_summary("z", self.z)
     
     if not self.shapesdataset:
@@ -139,30 +166,41 @@ class DCGAN(object):
     self.G                  = self.generator(self.z, self.y)
     self.sampler            = self.sampler(self.z, self.y)
     
-    use_stacked_discrim = False
-    if use_stacked_discrim:
-      full_inputs = tf.concat( [inputs, self.G], axis=0 )
-      
-      D, D_logits = self.discriminator(full_inputs, self.y, reuse=False)
-      
-      D = tf.reshape(D, [2, self.batch_size, -1])
-      D_logits = tf.reshape(D_logits, [2, self.batch_size, -1])
-      
-      self.D = D[0]
-      self.D_logits = D_logits[0]
-      self.D_ = D[1]
-      self.D_logits_ = D_logits[1]
-    elif self.shapesdataset:
+
+    if self.shapesdataset:
       self.y_ = self.discrim_embeddings(self.class_examples, reuse=False)
       self.D, self.D_logits = self.shapes_discriminator(inputs, self.y_, reuse=False)
       self.D_, self.D_logits_ = self.shapes_discriminator(self.G, self.y_, reuse=True)
+
+      if self.compare_examples:
+        y_f = self.discrim_embeddings(self.fake_examples, reuse=True)
+        self.Df, self.D_logitsf = self.shapes_discriminator(inputs, y_f, reuse=True)
+        self.Df_, self.D_logitsf_ = self.shapes_discriminator(self.G, y_f, reuse=True)
+        
     else:
-      self.D, self.D_logits = self.discriminator(inputs, self.class_examples, reuse=False)
-      self.D_, self.D_logits_ = self.discriminator(self.G, self.class_examples, reuse=True)
+      img_embs = self.discrim_embedder(inputs, reuse=False)
+      g_embs = self.discrim_embedder(self.G, reuse=True)
+      c_e_embs = self.discrim_embedder(self.class_examples, reuse=True)
+      self.D, self.D_logits = self.discriminator(img_embs, c_e_embs, reuse=False)
+      self.D_, self.D_logits_ = self.discriminator(g_embs, c_e_embs, reuse=True)
       
+      if self.compare_examples:
+        f_e_embs = self.discrim_embedder(self.fake_examples, reuse=True)
+        self.Df, self.D_logitsf = self.discriminator(img_embs, f_e_embs, reuse=True)
+        self.Df_, self.D_logitsf_ = self.discriminator(g_embs, f_e_embs, reuse=True)
+        
+    #if self.use_stacked_discrim:
+      #full_inputs = tf.concat( [inputs, self.G], axis=0 )
+      #D, D_logits = self.discriminator(full_inputs, self.class_examples, reuse=False)
+      #self.D, self.D_ = tf.reshape(D, [2, self.batch_size, -1])
+      #self.D_logits, self.D_logits_ = tf.reshape(D_logits, [2, self.batch_size, -1])    
+    
     self.d_sum = histogram_summary("d", self.D)
     self.d__sum = histogram_summary("d_", self.D_)
-    #self.G_sum = image_summary("G", self.G)
+    if not self.shapesdataset:
+      self.G_sum = image_summary("G", self.G)
+    else:
+      self.G_sum = histogram_summary("G", self.G)
 
     def sigmoid_cross_entropy_with_logits(x, y):
       try:
@@ -174,24 +212,27 @@ class DCGAN(object):
       sigmoid_cross_entropy_with_logits(self.D_logits, tf.ones_like(self.D)))
     self.d_loss_fake = tf.reduce_mean(
       sigmoid_cross_entropy_with_logits(self.D_logits_, tf.zeros_like(self.D_)))
-    self.g_loss = tf.reduce_mean(
-      sigmoid_cross_entropy_with_logits(self.D_logits_, tf.ones_like(self.D_)))
-
+      
+    self.d_loss = self.d_loss_real + self.d_loss_fake
+     
     self.d_loss_real_sum = scalar_summary("d_loss_real", self.d_loss_real)
     self.d_loss_fake_sum = scalar_summary("d_loss_fake", self.d_loss_fake)
-                          
-    self.d_loss = self.d_loss_real + self.d_loss_fake# + self.d_loss_fake_
+         
+    self.g_loss = tf.reduce_mean(
+      sigmoid_cross_entropy_with_logits(self.D_logits_, tf.ones_like(self.D_)))
+    if self.compare_examples:
+      g_loss_comp = tf.reduce_mean(
+        sigmoid_cross_entropy_with_logits(self.D_logitsf_, tf.zeros_like(self.Df_)))
+      self.g_loss += g_loss_comp
+      
+      d_loss_fake_comp = tf.reduce_mean(
+        sigmoid_cross_entropy_with_logits(self.D_logitsf, tf.zeros_like(self.Df)))
+      self.d_loss += d_loss_fake_comp + g_loss_comp
     
     self.g_loss_sum = scalar_summary("g_loss", self.g_loss)
     self.d_loss_sum = scalar_summary("d_loss", self.d_loss)
     
-    
-    #self.pred_z, self.pred_y = self.intepreter(self.G, reuse=False)
-    #self.z_loss = tf.reduce_mean(tf.square(self.pred_z - self.z), axis=[0,1])
-    #self.y_loss = tf.reduce_mean(tf.square(self.pred_y - self.y), axis=[0,1])
-    #self.zy_loss = self.z_loss + self.y_loss
-    
-    if True:
+    if self.use_regularization:
       self.d_reg = self.Discriminator_Regularizer(self.D, self.D_logits, self.inputs, self.D_, self.D_logits_, self.G)
       assert self.d_loss.shape == self.d_reg.shape
       self.d_loss += (self.gamma/2.0)*self.d_reg
@@ -201,8 +242,6 @@ class DCGAN(object):
     self.d_vars = [var for var in t_vars if 'd_' in var.name]
     self.g_vars = [var for var in t_vars if 'g_' in var.name]
     self.e_vars = [var for var in t_vars if '_e_' in var.name]
-    self.i_vars = [var for var in t_vars if 'i_' in var.name]
-
     self.saver = tf.train.Saver()
 
 
@@ -212,15 +251,14 @@ class DCGAN(object):
               .minimize(self.d_loss, var_list=self.d_vars)
     g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
               .minimize(self.g_loss, var_list=self.g_vars)
-    #zy_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
-    #          .minimize(self.zy_loss, var_list=self.i_vars+self.g_vars+self.e_vars)
+              
     try:
       tf.global_variables_initializer().run()
     except:
       tf.initialize_all_variables().run()
 
-    self.g_sum = merge_summary([self.z_sum, self.d__sum,
-      #self.G_sum,
+    # Summaries
+    self.g_sum = merge_summary([self.z_sum, self.d__sum, self.G_sum,
       self.d_loss_fake_sum, self.g_loss_sum])
     self.d_sum = merge_summary(
         [self.z_sum, self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
@@ -228,7 +266,6 @@ class DCGAN(object):
 
 
     #TODO: Select data in an appropriate way
-    # Also, why is this done twice?
     self.sample_num=self.batch_size
     sample_z = np.random.uniform(-1, 1, size=(self.sample_num, self.z_dim))
     
@@ -250,10 +287,11 @@ class DCGAN(object):
             './{}/class_examples_{}.png'.format(config.sample_dir, self.names[i]))
         sample_inputs.append(sample_images)
 
-    if self.shapesdataset:
-      sample_inputs = self.shapes._get_shape(0)[0][:self.batch_size]
-      sample_inputs_ = self.shapes._get_shape(1)[0][:self.batch_size]
-      
+    elif self.shapesdataset:
+      sample_inputs = []
+      num_sample_classes = 5
+      for i in range(num_sample_classes):
+        sample_inputs.append(self.shapes._get_shape(i)[0][:self.example_num])
       
     # Set up networks
     counter = 1
@@ -266,26 +304,20 @@ class DCGAN(object):
       print(" [!] Load failed...")
 
     for epoch in xrange(config.epoch):
-      #TODO: Select data in an appropriate way    
-      #self.data = glob(os.path.join(
-      #  "./data", config.dataset, self.input_fname_pattern))
-      batch_idxs = min(min([len(data) for data in self.data]), config.train_size) // config.batch_size
+    
+      #TODO: Select data in an appropriate way
+      batch_idxs = 1000
+      #min(min([len(data) for data in self.data]), config.train_size) // config.batch_size
 
-      for idx in xrange(0, 1000):#batch_idxs):
-        k = np.random.choice(len(self.data))
-        data = self.data[k]
-        #TODO: Select data in an appropriate way
-        
+      for idx in xrange(batch_idxs):
         if not self.shapesdataset:
-          if np.random.random() > 0.5:
-            inds = np.random.randint(0, len(self.data), [config.batch_size])
-            batch_files = []
-            for i in inds:
-              data = self.data[i]
-              batch_files = np.concatenate([batch_files, np.random.choice(data, [1])])
-          else:
-            batch_files = np.random.choice(data, [config.batch_size])
-          #data[idx*config.batch_size:(idx+1)*config.batch_size]
+        
+          # Get samples and fake sampes
+          k, k_ = np.random.choice(len(self.data), [2])
+          data = self.data[k]
+          fake_data = self.data[k_]
+          
+          batch_files = np.random.choice(data, [config.batch_size])
           batch = [
               get_image(batch_file,
                         input_height=self.input_height,
@@ -294,15 +326,11 @@ class DCGAN(object):
                         resize_width=self.output_width,
                         crop=self.crop,
                         grayscale=self.grayscale) for batch_file in batch_files]
-          if self.grayscale:
-            batch_images = np.array(batch).astype(np.float32)[:, :, :, None]
-          else:
-            batch_images = np.array(batch).astype(np.float32)
+          batch_images = np.array(batch).astype(np.float32)
           
-          #exemplars
-          use_separate_examples = False
-          if use_separate_examples:
-            batch_files = np.random.choice(data, [self.example_num])
+          if config.compare_examples:
+            #fake examples
+            batch_files = np.random.choice(fake_data, [self.example_num])
             batch = [
                 get_image(batch_file,
                           input_height=self.input_height,
@@ -311,20 +339,22 @@ class DCGAN(object):
                           resize_width=self.output_width,
                           crop=self.crop,
                           grayscale=self.grayscale) for batch_file in batch_files]
-            class_examples = np.array(batch).astype(np.float32)
+            fake_examples = np.array(batch).astype(np.float32)
           else:
-            class_examples = batch_images[:self.example_num]
+            fake_examples = batch_images
           
         else:
           batch_images = self.shapes._get_shape(idx)[0][:self.batch_size]
           class_examples = self.shapes._get_shape(idx)[0][self.batch_size:]
+          fake_examples = self.shapes._get_shape(idx+1000)[0][self.batch_size:]
 
         batch_z = np.random.uniform(-1, 1, [config.batch_size, self.z_dim]) \
               .astype(np.float32)
               
         feed_dict = { 
                       self.inputs: batch_images,
-                      self.class_examples: class_examples,
+                      self.class_examples: batch_images[:self.example_num],
+                      self.fake_examples: fake_examples[:self.example_num],
                       self.z: batch_z,
                     }
 
@@ -338,15 +368,10 @@ class DCGAN(object):
           feed_dict=feed_dict )
         self.writer.add_summary(summary_str, counter)
         
-        #_ = self.sess.run([zy_optim],feed_dict=feed_dict )
-
         # Run g_optim twice to make sure that d_loss does not go to zero (different from paper)
         _, summary_str = self.sess.run([g_optim, self.g_sum],
           feed_dict=feed_dict )
         self.writer.add_summary(summary_str, counter)
-        
-        #_, errZ, errY = self.sess.run([zy_optim,self.z_loss,self.y_loss],feed_dict=feed_dict )
-        errZ, errY = 0, 0
         
         errD_fake = self.d_loss_fake.eval(feed_dict)
         errD_real = self.d_loss_real.eval(feed_dict)
@@ -358,68 +383,81 @@ class DCGAN(object):
           % (epoch, idx, batch_idxs,
             time.time() - start_time, errD_fake+errD_real, errG))
             
-            
-        if not self.shapesdataset:
-          if np.mod(counter, 100) == 1:
-            #TODO: Fix sampling for CGAN
-            #try:
+        if np.mod(counter, config.sample_step) == 1:
+          if not self.shapesdataset:
+          
             for i in range(num_sample_classes):
-              samples, d_loss, g_loss = self.sess.run(
-                [self.sampler, self.d_loss, self.g_loss],
+              samples = self.sess.run(
+                self.sampler,
                 feed_dict={
                     self.z: sample_z,
                     self.class_examples: sample_inputs[i],
-                    self.inputs: sample_inputs[i],
-                    #TODO: add samples
-                },
-              )
+                })
+              
               save_images(samples, image_manifold_size(samples.shape[0]),
                     './{}/train_{:02d}_{:04d}_{}.png'.format(\
                     config.sample_dir, epoch, idx, self.names[i]))
-                    
-            print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss)) 
+            
+          else:
+            
+            c = ['r','g','b','c']
+            
+            for i in range(num_sample_classes):
+              shape = self.sess.run(
+                  self.sampler,
+                  feed_dict={
+                      self.z: sample_z,
+                      self.class_examples: sample_inputs[i],
+                  })
+              s = np.transpose(shape)
+              plt.scatter(s[0], s[1], 40, c='r')
+              
+              s = np.transpose(sample_inputs[i])
+              plt.scatter(s[0], s[1], 40, c='g')
 
-            #except:
-            #  print("one pic error!...")
+              plt.savefig('./{}/train_{:02d}_{:04d}_{}.png'.format(\
+                      config.sample_dir, epoch, idx, i))
+              plt.close()
             
-        else:
-          if np.mod(counter, 500) == 1:
-            shape = self.sess.run(
-                self.sampler,
-                feed_dict={
-                    self.z: sample_z,
-                    self.class_examples: sample_inputs,
-                    self.inputs: sample_inputs,
-                    #TODO: add samples
-                })
-            shape_ = np.transpose(shape)
-            plt.scatter(shape_[0], shape_[1], 40)
-            
-            shape = self.sess.run(
-                self.sampler,
-                feed_dict={
-                    self.z: sample_z,
-                    self.class_examples: sample_inputs_,
-                    self.inputs: sample_inputs_,
-                    #TODO: add samples
-                })
-            shape_ = np.transpose(shape)
-            plt.scatter(shape_[0], shape_[1], 40, c='r')
-            
-            shape_ = np.transpose(sample_inputs)
-            plt.scatter(shape_[0], shape_[1], 40, c='g')
-            
-            shape_ = np.transpose(sample_inputs_)
-            plt.scatter(shape_[0], shape_[1], 40, c='c')
-            
-            plt.show()
-
-
-            plt.show()
 
         if np.mod(counter, 500) == 2:
           self.save(config.checkpoint_dir, counter)
-
+          
+          
+  def test(self, config):
+    self.sample_num=self.batch_size
+    sample_z = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
+    
+    for i, data in enumerate(self.data):
+      print self.names[i]
+      if len(data) > self.example_num:
+        batch_files = data[:self.example_num]
+        batch = [
+            get_image(batch_file,
+                      input_height=self.input_height,
+                      input_width=self.input_width,
+                      resize_height=self.output_height,
+                      resize_width=self.output_width,
+                      crop=self.crop,
+                      grayscale=self.grayscale) for batch_file in batch_files]
+        sample_inputs = np.array(batch).astype(np.float32)
+        
+        samples = self.sess.run(
+          self.sampler,
+          feed_dict={
+              self.z: sample_z,
+              self.class_examples: sample_inputs,
+          },
+        )
+        
+        save_images(sample_inputs, image_manifold_size(sample_inputs.shape[0]),
+              './{}/{}_examples.png'.format(\
+              "samples", self.names[i]))
+              
+        save_images(samples, image_manifold_size(samples.shape[0]),
+              './{}/{}_samples.png'.format(\
+              "all_samples", self.names[i]))
+                
 
   def discrim_embeddings_(self, image, reuse=False):
     with tf.variable_scope("discrim_embedding") as scope:
@@ -431,16 +469,23 @@ class DCGAN(object):
       h5 = linear(h4, self.y_dim, 'd_e_h5_lin')
       return h5
       
-  def discrim_embedder(self, image, reuse=False):
-    with tf.variable_scope("discrim_embedder") as scope:
+  def discrim_embedder(self, image, reuse=False, name=""):
+    with tf.variable_scope("discrim_embedder"+name) as scope:
       if reuse:
         scope.reuse_variables()
+        
+      #dim_1 = tf.shape(image)[0]
+      s_h, s_w = self.output_height, self.output_width
+      s_h2, s_w2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2)
+      s_h4, s_w4 = conv_out_size_same(s_h2, 2), conv_out_size_same(s_w2, 2)
+      s_h8, s_w8 = conv_out_size_same(s_h4, 2), conv_out_size_same(s_w4, 2)
+      s_h16, s_w16 = conv_out_size_same(s_h8, 2), conv_out_size_same(s_w8, 2)
 
       h0 = lrelu(conv2d(image, self.df_dim, name='d_e_h0_conv'))
       h1 = lrelu(conv2d(h0, self.df_dim*2, name='d_e_h1_conv'))
       h2 = lrelu(conv2d(h1, self.df_dim*4, name='d_e_h2_conv'))
       h3 = lrelu(conv2d(h2, self.df_dim*8, name='d_e_h3_conv'))
-      h3_s = tf.reshape(h3, [self.batch_size, -1])
+      h3_s = tf.reshape(h3, [-1,  s_h16*s_w16*512])
       return h3_s
       
   def discrim_embeddings(self, image, reuse=False):
@@ -455,22 +500,25 @@ class DCGAN(object):
       h3 = linear(h2, 256, 'd_h3_lin')
       return h2
       
-
-  def discriminator(self, image, sample_image, reuse=False):
+      
+  def discriminator(self, image_e, sample_image_e, reuse=False):
     with tf.variable_scope("discriminator") as scope:
       if reuse:
         scope.reuse_variables()
 
-      h3y_s = self.discrim_embedder(sample_image, reuse=reuse)
+      #h3y_s = self.discrim_embedder(sample_image, reuse=reuse)
+      h3y_s = sample_image_e
       h3y_p = tf.reduce_max(h3y_s, axis=0, keep_dims=True)
       h4y = lrelu(linear(h3y_p, 1024, 'd_h4y_lin'))
       
-      h3_s = self.discrim_embedder(image, reuse=True)
+      
+      #h3_s = self.discrim_embedder(image, reuse=True)
+      h3_s = image_e
       h3_p = h3_s - tf.reduce_max(h3_s, axis=0, keep_dims=True)
       h4 = lrelu(linear(h3_p, 1024, 'd_h4_lin'))
-      h4_ = h4
+      h4_ = h4# - tf.reduce_max(h4, axis=0, keep_dims=True)
       h5 = lrelu(linear(h4_-h4y, 1024, 'd_h5_lin'))
-      h6 = linear(h5, 1, 'd_h6_lin')
+      h6 = linear(h5, 1, 'd_h7_lin')
       
       return tf.nn.sigmoid(h6), h6
       
@@ -495,15 +543,21 @@ class DCGAN(object):
     with tf.variable_scope("gen_embedding") as scope:
       if reuse:
         scope.reuse_variables()
+        
+      s_h, s_w = self.output_height, self.output_width
+      s_h2, s_w2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2)
+      s_h4, s_w4 = conv_out_size_same(s_h2, 2), conv_out_size_same(s_w2, 2)
+      s_h8, s_w8 = conv_out_size_same(s_h4, 2), conv_out_size_same(s_w4, 2)
+      s_h16, s_w16 = conv_out_size_same(s_h8, 2), conv_out_size_same(s_w8, 2)
 
       h0 = tf.nn.relu(conv2d(image, self.df_dim, name='g_e_h0_conv'))
-      h1 = tf.nn.relu(conv2d(h0, self.df_dim, name='g_e_h1_conv'))
-      h2 = tf.nn.relu(conv2d(h1, self.df_dim, name='g_e_h2_conv'))
-      h3 = tf.nn.relu(conv2d(h2, self.df_dim, name='g_e_h3_conv'))
-      h3_s = tf.reshape(h3, [self.batch_size, -1])
-      h3_p = tf.reduce_max(h3_s, axis=0, keep_dims=True)
-      h4 = linear(h3_p, self.y_dim, 'g_e_h4_lin')
-      return h4
+      h1 = tf.nn.relu(conv2d(h0, self.df_dim*2, name='g_e_h1_conv'))
+      h2 = tf.nn.relu(conv2d(h1, self.df_dim*4, name='g_e_h2_conv'))
+      h3 = tf.nn.relu(conv2d(h2, self.df_dim*8, name='g_e_h3_conv'))
+      h3_s = tf.reshape(h3, [-1, s_h16*s_w16*64])
+      h4 = linear(h3_s, self.y_dim, 'g_e_h4_lin')
+      h4_p = tf.reduce_max(h4, axis=0, keep_dims=True)
+      return h4_p
       
       
   def shape_embeddings(self, image, reuse=False):
@@ -543,31 +597,33 @@ class DCGAN(object):
       method = tf.image.ResizeMethod.NEAREST_NEIGHBOR
       
       # project `z` and reshape
-      z_ = linear(
-          z, self.gf_dim*8*s_h16*s_w16, 'g_h0z_lin')
-      y_ = linear(
-          y, self.gf_dim*8*s_h16*s_w16, 'g_h0y_lin')
+
+      z_0 = linear(z, self.y_dim, 'g_h0z_lin')
+      z_1 = linear(
+          z_0+y, self.gf_dim*8*s_h16*s_w16, 'g_h1z_lin')
+      
       h0 = tf.reshape(
-          z_+y_, [self.batch_size, s_h16, s_w16, self.gf_dim * 8])
+          z_1, [-1, s_h16, s_w16, self.gf_dim * 8])
       h0 = tf.nn.relu(self.g_bn0(h0))
       
-      yb = tf.reshape(y, [1, 1, 1, self.y_dim])
-      #h0 = conv_cond_concat(h0, yb)
+      y_0 = tf.nn.relu(linear(y, self.y_dim, 'g_h0y_lin'))
+      yb = tf.reshape(y_0, [1, 1, 1, self.y_dim])
+      h0 = conv_cond_concat(h0, yb)
 
       h0_up = tf.image.resize_images(h0, (s_h8, s_w8), method=method)
       h1 = tf.nn.relu(self.g_bn1(conv2d(h0_up, self.gf_dim*4, 
           k_h=5, k_w=5, d_h=1, d_w=1, name='g_c1')))
-      #h1 = conv_cond_concat(h1, yb)
+      h1 = conv_cond_concat(h1, yb)
 
       h1_up = tf.image.resize_images(h1, (s_h4, s_w4), method=method) 
       h2 = tf.nn.relu(self.g_bn2(conv2d(h1_up, self.gf_dim*2, 
           k_h=5, k_w=5, d_h=1, d_w=1, name='g_c2')))
-      #h2 = conv_cond_concat(h2, yb)
+      h2 = conv_cond_concat(h2, yb)
 
       h2_up = tf.image.resize_images(h2, (s_h2, s_w2), method=method) 
       h3 = tf.nn.relu(self.g_bn3(conv2d(h2_up, self.gf_dim, 
           k_h=5, k_w=5, d_h=1, d_w=1, name='g_c3')))
-      #h3 = conv_cond_concat(h3, yb)
+      h3 = conv_cond_concat(h3, yb)
       
       #additional conv layers
       h3 = tf.nn.relu(self.g_bn4(conv2d(h3, self.gf_dim, 
@@ -590,23 +646,6 @@ class DCGAN(object):
       return h3
       
       
-  def intepreter(self, image, reuse=False):
-    with tf.variable_scope("intepreter") as scope:
-      if reuse:
-        scope.reuse_variables()
-
-      h0 = lrelu(conv2d(image, self.df_dim, name='i_h0_conv'))
-      h1 = lrelu(conv2d(h0, self.df_dim*2, name='i_h1_conv'))
-      h2 = lrelu(conv2d(h1, self.df_dim*4, name='i_h2_conv'))
-      h3 = lrelu(self.d_bn3(conv2d(h2, self.df_dim*8, name='i_h3_conv')))
-      h4 = linear(tf.reshape(h3, [self.batch_size, -1]), 1024, 'i_h4_lin')
-
-      h5 = linear(lrelu(h4), 1024, 'i_h5_lin')
-      pred_z = linear(lrelu(h5), self.z_dim, 'i_pred_z')
-      pred_y = linear(lrelu(h5), self.y_dim, 'i_pred_y')
-      
-      return pred_z, pred_y
-
   @property
   def model_dir(self):
     return "{}_{}_{}_{}".format(

@@ -100,11 +100,42 @@ def download_celeb_a(dirpath):
     download_file_from_google_drive(drive_id, save_path)
 
   zip_dir = ''
+  print('[*] Extracting {}'.format(save_path))
   with zipfile.ZipFile(save_path) as zf:
     zip_dir = zf.namelist()[0]
     zf.extractall(dirpath)
   os.remove(save_path)
-  os.rename(os.path.join(dirpath, zip_dir), os.path.join(dirpath, data_dir))
+  new_path = os.path.join(dirpath, data_dir)
+  
+  os.mkdir(new_path)
+  new_path = os.path.join(new_path, "common")
+  os.mkdir(new_path)
+  os.rename(os.path.join(dirpath, zip_dir), new_path)
+  
+  print("[*] Tagging")
+  tag_celeb_a("list_attr_celeba.txt", new_path)
+  
+  
+def tag_celeb_a(tags_file, data_dir):
+  with open(tags_file, "r") as f:
+    num_entries = int(f.readline())
+    
+    tags = f.readline().split()
+
+    for i in range(num_entries):
+      line = f.readline().split()
+      file_name = line[0]
+      line = line[1:]
+      this_tags = []
+      for i, l in enumerate(line):
+        if l == '1':
+           this_tags.append(tags[i])
+      tags_str = ' '.join(this_tags)
+      
+      new_path = os.path.join(data_dir, file_name + '.tags')
+      with open(new_path, "w") as text_file:
+          text_file.write(tags_str)
+          
 
 def _list_categories(tag):
   url = 'http://lsun.cs.princeton.edu/htbin/list.cgi?tag=' + tag
@@ -118,11 +149,17 @@ def _download_lsun(out_dir, category, set_name, tag):
   if set_name == 'test':
     out_name = 'test_lmdb.zip'
   else:
-    out_name = '{category}_{set_name}_lmdb.zip'.format(**locals())
+    out_name = '{set_name}_lmdb.zip'.format(**locals())
   out_path = os.path.join(out_dir, out_name)
   cmd = ['curl', url, '-o', out_path]
   print('Downloading', category, set_name, 'set')
   subprocess.call(cmd)
+  #zip_dir = ''
+  #print('[*] extracting {}'.format(out_path))
+  #with zipfile.ZipFile(out_path) as zf:
+  #  zip_dir = zf.namelist()[0]
+  #  zf.extractall(out_dir)
+  
 
 def download_lsun(dirpath):
   data_dir = os.path.join(dirpath, 'lsun')
@@ -133,36 +170,16 @@ def download_lsun(dirpath):
     os.mkdir(data_dir)
 
   tag = 'latest'
-  #categories = _list_categories(tag)
-  categories = ['bedroom']
+  categories = _list_categories(tag)[:2]
+  print(categories)
+  #categories = ['bedroom']
 
   for category in categories:
-    _download_lsun(data_dir, category, 'train', tag)
-    _download_lsun(data_dir, category, 'val', tag)
-  _download_lsun(data_dir, '', 'test', tag)
-
-def download_mnist(dirpath):
-  data_dir = os.path.join(dirpath, 'mnist')
-  if os.path.exists(data_dir):
-    print('Found MNIST - skip')
-    return
-  else:
-    os.mkdir(data_dir)
-  url_base = 'http://yann.lecun.com/exdb/mnist/'
-  file_names = ['train-images-idx3-ubyte.gz',
-                'train-labels-idx1-ubyte.gz',
-                't10k-images-idx3-ubyte.gz',
-                't10k-labels-idx1-ubyte.gz']
-  for file_name in file_names:
-    url = (url_base+file_name).format(**locals())
-    print(url)
-    out_path = os.path.join(data_dir,file_name)
-    cmd = ['curl', url, '-o', out_path]
-    print('Downloading ', file_name)
-    subprocess.call(cmd)
-    cmd = ['gzip', '-d', out_path]
-    print('Decompressing ', file_name)
-    subprocess.call(cmd)
+    new_path = os.path.join(data_dir, category)
+    if not os.path.exists(new_path):
+      os.mkdir(new_path)
+    #_download_lsun(new_path, category, 'train', tag)
+    _download_lsun(new_path, category, 'val', tag)
 
 def prepare_data_dir(path = './data'):
   if not os.path.exists(path):
@@ -176,5 +193,3 @@ if __name__ == '__main__':
     download_celeb_a('./data')
   if 'lsun' in args.datasets:
     download_lsun('./data')
-  if 'mnist' in args.datasets:
-    download_mnist('./data')
