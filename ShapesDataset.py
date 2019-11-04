@@ -60,7 +60,7 @@ class shapeGenerator():
             extra_points = 0
         N = self.num_points + extra_points                             # number of points
         scale = self.scale_min + np.random.random()*(1-self.scale_min) # scale factor
-        rot = 0#np.random.random()                                       # rotation factor
+        rot = np.random.random()                                       # rotation factor
         x_shift = (2*np.random.random()-1)*self.shape_noise_scale      # x noise for shape
         y_shift = (2*np.random.random()-1)*self.shape_noise_scale      # y noise for shape
 
