@@ -14,6 +14,8 @@ from six.moves import xrange
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 
+import matplotlib.pyplot as plt
+
 pp = pprint.PrettyPrinter()
 
 get_stddev = lambda x, k_h, k_w: 1/math.sqrt(k_w*k_h*x.get_shape()[-1])
@@ -33,8 +35,8 @@ def get_image(image_path, input_height, input_width,
     t = transform(image, input_height, input_width,
                    resize_height, resize_width, crop)  
   except:
-    print "error reading " + image_path
-    print np.shape(image)
+    print("error reading " + image_path)
+    print(np.shape(image))
   return t
 
 def save_images(images, size, image_path):
@@ -256,3 +258,36 @@ def image_manifold_size(num_images):
   manifold_w = int(np.ceil(np.sqrt(num_images)))
   assert manifold_h * manifold_w == num_images
   return manifold_h, manifold_w
+
+def save_shape(shape, filename, color=None):
+  fig = plt.figure(figsize=[4,4])
+
+  ax = fig.add_subplot(1,1,1, adjustable='box', aspect=1.)
+  ax.set_xlim((-2.5,2.5))
+  ax.set_ylim((-2.5,2.5))
+  
+  plt.xticks(np.arange(-2., 2.1, 1.), fontsize=8)
+  plt.yticks(np.arange(-2., 2.1, 1.), fontsize=8)
+
+  ax.set_xticks(np.arange(-2.5, 2.5, .1), minor=True)
+  ax.set_yticks(np.arange(-2.5, 2.5, .1), minor=True)
+  ax.grid(True, which='major', axis='both', linestyle=':', alpha=0.5)
+  ax.grid(True, which='minor', axis='both', linestyle=':', alpha=0.25)
+  ax.axhline(0, linestyle='solid', alpha=0.25, c='gray')
+  ax.axvline(0, linestyle='solid', alpha=0.25, c='gray')
+
+  shape_ = np.transpose(shape)
+  ax.scatter(shape_[0], shape_[1], 20, marker='o', c=color)
+
+  ax.spines['left'].set_visible(False)#.set_position('zero')
+  ax.spines['bottom'].set_visible(False)#.set_position('zero')
+  ax.spines['right'].set_visible(False)
+  ax.spines['top'].set_visible(False)
+  ax.tick_params(axis="both", which="both", bottom=False, top=False, left=False, right=False) 
+
+  #ax.legend().get_frame().set_linewidth(0.0)
+
+  fig.tight_layout()
+
+  plt.savefig(filename)
+  plt.close()

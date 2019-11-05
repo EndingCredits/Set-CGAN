@@ -86,7 +86,7 @@ class DCGAN(object):
       from ShapesDataset import shapeGenerator
       params = {
         'point_noise_scale': 0.01,
-        'shape_noise_scale': 0.001,
+        'shape_noise_scale': 1.,
         'scale_min': 0.5,
         'uniform_point_distribution': True,
         'num_points': self.batch_size*2,
@@ -123,7 +123,8 @@ class DCGAN(object):
         self.data = all_data.values()
         self.names = all_data.keys()
 
-      print(len(self.data))
+      print("Loaded ", len(self.data), " classes")
+      #print(self.names)
       
       imreadImg = imread(self.data[0][0])
       self.c_dim = 1
@@ -273,7 +274,7 @@ class DCGAN(object):
       sample_inputs = []
       num_sample_classes = min(5, len(self.data))
       for i in range(num_sample_classes):
-        sample_files = self.data[i][0:self.example_num]
+        sample_files = np.random.choice(self.data[i], size=self.example_num)
         sample = [
             get_image(sample_file,
                       input_height=self.input_height,
@@ -292,6 +293,8 @@ class DCGAN(object):
       num_sample_classes = 5
       for i in range(num_sample_classes):
         sample_inputs.append(self.shapes._get_shape(i)[0][:self.example_num])
+        save_shape(sample_inputs[i], './{}/class_examples_{}.png'.format(config.sample_dir, i),
+          color=u'r')
       
     # Set up networks
     counter = 1
@@ -399,7 +402,6 @@ class DCGAN(object):
                     config.sample_dir, epoch, idx, self.names[i]))
             
           else:
-            
             c = ['r','g','b','c']
             
             for i in range(num_sample_classes):
@@ -409,15 +411,16 @@ class DCGAN(object):
                       self.z: sample_z,
                       self.class_examples: sample_inputs[i],
                   })
-              s = np.transpose(shape)
-              plt.scatter(s[0], s[1], 40, c='r')
-              
-              s = np.transpose(sample_inputs[i])
-              plt.scatter(s[0], s[1], 40, c='g')
-
-              plt.savefig('./{}/train_{:02d}_{:04d}_{}.png'.format(\
+              save_shape(shape, './{}/train_{:02d}_{:04d}_{}.png'.format(\
                       config.sample_dir, epoch, idx, i))
-              plt.close()
+              
+              #s = np.transpose(shape)
+              #plt.scatter(s[0], s[1], 40, c='r')
+              #s = np.transpose(sample_inputs[i])
+              #plt.scatter(s[0], s[1], 40, c='g')
+              #plt.savefig('./{}/train_{:02d}_{:04d}_{}.png'.format(\
+              #        config.sample_dir, epoch, idx, i))
+              #plt.close()
             
 
         if np.mod(counter, 500) == 2:
@@ -429,7 +432,7 @@ class DCGAN(object):
     sample_z = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
     
     for i, data in enumerate(self.data):
-      print self.names[i]
+      print(self.names[i])
       if len(data) > self.example_num:
         batch_files = data[:self.example_num]
         batch = [
